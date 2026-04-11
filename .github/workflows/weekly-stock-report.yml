@@ -1,0 +1,28 @@
+name: Weekly Stock Report to LINE
+
+on:
+  schedule:
+    # Every Monday at 01:00 UTC = 08:00 ICT (Thailand)
+    - cron: '0 1 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install tradingview-mcp-server requests
+
+      - name: Run report and send to LINE
+        env:
+          LINE_NOTIFY_TOKEN: ${{ secrets.LINE_NOTIFY_TOKEN }}
+        run: python .github/scripts/weekly_stock_report.py
