@@ -20,9 +20,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install tradingview-mcp-server requests
+          pip install tradingview-ta yfinance requests
 
       - name: Run report and send to LINE
         env:
-          LINE_NOTIFY_TOKEN: ${{ secrets.LINE_NOTIFY_TOKEN }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
         run: python .github/scripts/weekly_stock_report.py

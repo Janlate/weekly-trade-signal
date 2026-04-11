@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Weekly Stock Technical Analysis Report - LINE Notify via GitHub Actions"""
+"""Weekly Stock Technical Analysis Report - LINE Messaging API via GitHub Actions"""
 
 import os
 import requests
 from tradingview_ta import TA_Handler, Interval
+import yfinance as yf
 
-LINE_TOKEN = os.environ["LINE_NOTIFY_TOKEN"]
+LINE_CHANNEL_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+LINE_USER_ID = os.environ["LINE_USER_ID"]
 
 STOCKS = {
     'GOOGL': ('NASDAQ', 'america'),
@@ -20,8 +22,7 @@ STOCKS = {
 
 
 def get_yahoo_price(symbol):
-    """Get price data from Yahoo Finance via yfinance."""
-    import yfinance as yf
+    """Get price data from Yahoo Finance."""
     ticker = yf.Ticker(symbol)
     info = ticker.info
     price = info.get('regularMarketPrice') or info.get('currentPrice')
@@ -98,7 +99,7 @@ def analyze_stock(symbol, exchange, screener):
 
 def build_message():
     """Build the LINE notification message."""
-    lines = ["\n📊 Weekly Stock Report"]
+    lines = ["📊 Weekly Stock Report"]
     lines.append("=" * 28)
 
     for symbol, (exchange, screener) in STOCKS.items():
@@ -120,10 +121,17 @@ def build_message():
 
 
 def send_line(message):
-    """Send message via LINE Notify."""
-    url = "https://notify-api.line.me/api/notify"
-    headers = {"Authorization": f"Bearer {LINE_TOKEN}"}
-    resp = requests.post(url, headers=headers, data={"message": message})
+    """Send message via LINE Messaging API (push message)."""
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {
+        "Authorization": f"Bearer {LINE_CHANNEL_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "to": LINE_USER_ID,
+        "messages": [{"type": "text", "text": message}],
+    }
+    resp = requests.post(url, headers=headers, json=payload)
     print(f"LINE Status: {resp.status_code}")
     print(f"LINE Response: {resp.text}")
     resp.raise_for_status()
