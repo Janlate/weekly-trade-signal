@@ -2,13 +2,11 @@
 """Weekly Stock Technical Analysis Report - LINE Messaging API via GitHub Actions"""
 
 import os
+import sys
 import time
 import requests
 from tradingview_ta import TA_Handler, Interval
 import yfinance as yf
-
-LINE_CHANNEL_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-LINE_USER_ID = os.environ["LINE_USER_ID"]
 
 STOCKS = {
     'GOOGL': ('NASDAQ', 'america'),
@@ -20,6 +18,20 @@ STOCKS = {
     'MSFT': ('NASDAQ', 'america'),
     'IREN': ('NASDAQ', 'america'),
 }
+
+
+def get_config():
+    """Validate and return required config from environment."""
+    token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+    user_id = os.environ.get("LINE_USER_ID")
+    if not token or not user_id:
+        print("ERROR: Missing required environment variables:")
+        if not token:
+            print("  - LINE_CHANNEL_ACCESS_TOKEN")
+        if not user_id:
+            print("  - LINE_USER_ID")
+        sys.exit(1)
+    return token, user_id
 
 
 def get_yahoo_price(symbol):
@@ -51,6 +63,20 @@ def format_market_cap(cap):
     return f"${cap/1e6:.0f}M"
 
 
+def safe_price_fmt(value):
+    """Safely format a price value."""
+    if value is None:
+        return "N/A"
+    return f"${value:,.2f}"
+
+
+def safe_pct_fmt(value):
+    """Safely format a percentage value."""
+    if value is None:
+        return "N/A"
+    return f"{value:+.1f}%"
+
+
 def analyze_stock(symbol, exchange, screener):
     """Analyze a single stock and return detailed message."""
     yf_data = get_yahoo_price(symbol)
@@ -68,9 +94,10 @@ def analyze_stock(symbol, exchange, screener):
     prev_close = yf_data['prev_close']
     market_cap = yf_data['market_cap']
 
-    pct_from_high = ((price - high_52w) / high_52w) * 100 if price and high_52w else 0
-    pct_from_low = ((price - low_52w) / low_52w) * 100 if price and low_52w else 0
-    day_change = ((price - prev_close) / prev_close) * 100 if price and prev_close else 0
+    # Calculate percentages safely
+    pct_from_high = ((price - high_52w) / high_52w) * 100 if price and high_52w else None
+    pct_from_low = ((price - low_52w) / low_52w) * 100 if price and low_52w else None
+    day_change = ((price - prev_close) / prev_close) * 100 if price and prev_close else None
 
     # RSI
     rsi = ind.get('RSI')
@@ -104,7 +131,7 @@ def analyze_stock(symbol, exchange, screener):
     bb_lower = ind.get('BB.lower')
     if bb_upper and bb_lower:
         bb_width = bb_upper - bb_lower
-        bb_pos = ((price - bb_lower) / bb_width) * 100 if bb_width > 0 else 50
+        bb_pos = ((price - bb_lower) / bb_width) * 100 if price and bb_width > 0 else 50
         if bb_pos > 80:
             bb_zone = "⚠️ Upper Band (Overbought)"
         elif bb_pos < 20:
@@ -116,8 +143,8 @@ def analyze_stock(symbol, exchange, screener):
         else:
             bb_zone = "Middle Band (Neutral)"
     else:
-        bb_upper = bb_middle = bb_lower = 0
-        bb_pos = 50
+        bb_upper = bb_middle = bb_lower = None
+        bb_pos = None
         bb_zone = "N/A"
 
     # SMA / EMA
@@ -188,10 +215,10 @@ def analyze_stock(symbol, exchange, screener):
         f"{'='*30}",
         f"",
         f"💰 ราคา & Market Cap",
-        f"   Price: ${price:,.2f} ({day_change:+.2f}%)",
+        f"   Price: {safe_price_fmt(price)} ({safe_pct_fmt(day_change)})",
         f"   Market Cap: {format_market_cap(market_cap)}",
-        f"   52W High: ${high_52w:,.2f} ({pct_from_high:+.1f}%)",
-        f"   52W Low: ${low_52w:,.2f} ({pct_from_low:+.1f}%)",
+        f"   52W High: {safe_price_fmt(high_52w)} ({safe_pct_fmt(pct_from_high)})",
+        f"   52W Low: {safe_price_fmt(low_52w)} ({safe_pct_fmt(pct_from_low)})",
         f"",
         f"📊 RSI (14): {rsi:.1f}" if rsi else "📊 RSI: N/A",
         f"   Signal: {rsi_signal}",
@@ -203,17 +230,17 @@ def analyze_stock(symbol, exchange, screener):
         f"   Signal: {macd_signal}",
         f"",
         f"🎯 Bollinger Band",
-        f"   Upper: ${bb_upper:,.2f}" if bb_upper else "   Upper: N/A",
-        f"   Middle: ${bb_middle:,.2f}" if bb_middle else "   Middle: N/A",
-        f"   Lower: ${bb_lower:,.2f}" if bb_lower else "   Lower: N/A",
-        f"   Position: {bb_pos:.0f}%",
+        f"   Upper: {safe_price_fmt(bb_upper)}",
+        f"   Middle: {safe_price_fmt(bb_middle)}",
+        f"   Lower: {safe_price_fmt(bb_lower)}",
+        f"   Position: {bb_pos:.0f}%" if bb_pos is not None else "   Position: N/A",
         f"   Zone: {bb_zone}",
         f"",
         f"📐 Moving Averages",
-        f"   SMA20: ${sma20:,.2f}" if sma20 else "   SMA20: N/A",
-        f"   SMA50: ${sma50:,.2f}" if sma50 else "   SMA50: N/A",
-        f"   SMA200: ${sma200:,.2f}" if sma200 else "   SMA200: N/A",
-        f"   EMA20: ${ema20:,.2f}" if ema20 else "   EMA20: N/A",
+        f"   SMA20: {safe_price_fmt(sma20)}",
+        f"   SMA50: {safe_price_fmt(sma50)}",
+        f"   SMA200: {safe_price_fmt(sma200)}",
+        f"   EMA20: {safe_price_fmt(ema20)}",
     ]
     if ma_signals:
         lines.append(f"   Signals: {', '.join(ma_signals)}")
@@ -239,27 +266,35 @@ def analyze_stock(symbol, exchange, screener):
     return "\n".join(lines)
 
 
-def send_line(message):
+def send_line(message, token, user_id):
     """Send a single message via LINE Messaging API."""
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
-        "Authorization": f"Bearer {LINE_CHANNEL_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
     payload = {
-        "to": LINE_USER_ID,
+        "to": user_id,
         "messages": [{"type": "text", "text": message}],
     }
-    resp = requests.post(url, headers=headers, json=payload)
+    resp = requests.post(url, headers=headers, json=payload, timeout=15)
     if resp.status_code != 200:
         print(f"  LINE Error: {resp.status_code} {resp.text}")
     return resp.status_code
 
 
 def main():
+    token, user_id = get_config()
+
     # Send header message
-    header = "📊 Weekly Stock Technical Analysis\n" + "=" * 30 + "\nวิเคราะห์หุ้น 8 ตัว ณ วันนี้\n\nหุ้น: GOOGL | TSLA | BABA | NFLX | NVDA | META | MSFT | IREN\n\nรายละเอียดแต่ละตัวจะส่งตามมาครับ 👇"
-    send_line(header)
+    header = (
+        "📊 Weekly Stock Technical Analysis\n"
+        + "=" * 30
+        + "\nวิเคราะห์หุ้น 8 ตัว ณ วันนี้\n\n"
+        "หุ้น: GOOGL | TSLA | BABA | NFLX | NVDA | META | MSFT | IREN\n\n"
+        "รายละเอียดแต่ละตัวจะส่งตามมาครับ 👇"
+    )
+    send_line(header, token, user_id)
     time.sleep(1)
 
     success = 0
@@ -268,19 +303,27 @@ def main():
             print(f"Analyzing {symbol}...")
             msg = analyze_stock(symbol, exchange, screener)
             print(msg)
-            status = send_line(msg)
+            status = send_line(msg, token, user_id)
             if status == 200:
                 success += 1
                 print(f"  ✅ Sent {symbol}")
-            time.sleep(1)  # Rate limit
+            time.sleep(1)
         except Exception as e:
             print(f"  ❌ {symbol} Error: {e}")
-            send_line(f"⚠️ {symbol} — Error: {e}")
+            try:
+                send_line(f"⚠️ {symbol} — ไม่สามารถวิเคราะห์ได้", token, user_id)
+            except Exception:
+                pass
             time.sleep(1)
 
     # Send footer
-    footer = f"✅ Weekly Report Complete\n\n{success}/{len(STOCKS)} หุ้นวิเคราะห์สำเร็จ\n\nSource: TradingView + Yahoo Finance\n⚠️ ข้อมูลนี้ไม่ใช่คำแนะนำในการลงทุน"
-    send_line(footer)
+    footer = (
+        f"✅ Weekly Report Complete\n\n"
+        f"{success}/{len(STOCKS)} หุ้นวิเคราะห์สำเร็จ\n\n"
+        f"Source: TradingView + Yahoo Finance\n"
+        f"⚠️ ข้อมูลนี้ไม่ใช่คำแนะนำในการลงทุน"
+    )
+    send_line(footer, token, user_id)
     print(f"\n🎉 Done! Sent {success}/{len(STOCKS)} stocks")
 
 

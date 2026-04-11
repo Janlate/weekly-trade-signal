@@ -6,9 +6,13 @@ on:
     - cron: '0 1 * * 1'
   workflow_dispatch: # Allow manual trigger
 
+permissions:
+  contents: read
+
 jobs:
   send-report:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
@@ -17,10 +21,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: .github/scripts/requirements.txt
 
       - name: Install dependencies
-        run: |
-          pip install tradingview-ta yfinance requests
+        run: pip install -r .github/scripts/requirements.txt
 
       - name: Run report and send to LINE
         env:
