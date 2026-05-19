@@ -98,7 +98,7 @@ def score_layer_7(f: TickerFinancials) -> LayerScore:
     else:
         peg_score = 0
 
-    # EV/Sales (current only — Phase 1; percentile in Phase 2)
+    # EV/Sales (current only — Phase 1; historical percentile added below)
     ev = f.market_cap_current + max(f.total_debt_5y[-1] - f.cash_5y[-1], 0) if (
         f.total_debt_5y and f.cash_5y
     ) else f.market_cap_current
@@ -106,13 +106,38 @@ def score_layer_7(f: TickerFinancials) -> LayerScore:
     # Phase 1 simple: just track value, score = 1 (neutral)
     evs_score = 1
 
+    # Q18 — Historical percentile vs own 5y history
+    def _percentile_rank(series: list[float], current: float) -> float | None:
+        """Return 0.0-1.0 percentile rank of current within series (excl NaN/negative)."""
+        valid = [v for v in series if v == v and v > 0]  # exclude NaN (v==v is False for NaN)
+        if len(valid) < 2:
+            return None
+        below = sum(1 for v in valid if v < current)
+        return below / len(valid)
+
+    pe_5y_percentile: float | None = None
+    pe_5y_series: list[float] = []
+    ev_sales_5y_percentile: float | None = None
+    ev_sales_5y_series: list[float] = []
+
+    if f.historical_pe_5y:
+        pe_5y_series = f.historical_pe_5y
+        if pe is not None and pe > 0:
+            pe_5y_percentile = _percentile_rank(pe_5y_series, pe)
+
+    if f.historical_ev_sales_5y:
+        ev_sales_5y_series = f.historical_ev_sales_5y
+        if ev_sales > 0:
+            ev_sales_5y_percentile = _percentile_rank(ev_sales_5y_series, ev_sales)
+
     raw = mos_score + peg_score + evs_score
     score = clamp(raw, 0, 10)
 
     peg_str = f"PEG {peg:.2f}" if peg else "PEG N/A"
+    pe_pctile_str = f" · P/E percentile {pe_5y_percentile*100:.0f}%" if pe_5y_percentile is not None else ""
     rationale = (
         f"Fair (base) ${fair['base']:.2f}, price ${f.price_current:.2f}, MOS {mos*100:+.1f}%; "
-        f"{peg_str}; EV/S {ev_sales:.1f}x"
+        f"{peg_str}; EV/S {ev_sales:.1f}x{pe_pctile_str}"
     )
 
     return LayerScore(
@@ -124,6 +149,11 @@ def score_layer_7(f: TickerFinancials) -> LayerScore:
             "peg": peg, "peg_confidence": "MED", "ev_sales": ev_sales,
             "assumptions": {"rev_growth": base_growth, "op_margin": op_margin,
                             "capex_pct": capex_pct, "wacc": wacc},
+            # Q18 historical percentile fields
+            "pe_5y_percentile": pe_5y_percentile,
+            "pe_5y_series": pe_5y_series,
+            "ev_sales_5y_percentile": ev_sales_5y_percentile,
+            "ev_sales_5y_series": ev_sales_5y_series,
         },
         data_completeness=1.0,
     )

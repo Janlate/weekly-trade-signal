@@ -37,6 +37,11 @@ class TickerFinancials:
     price_current: float = 0.0
     market_cap_current: float = 0.0
     forward_eps_growth_1y: float | None = None
+    # historical valuation series — populated by yfinance provider for L7 Q18
+    # list of annual P/E values (oldest -> newest), one per year, max 5 years
+    historical_pe_5y: list[float] | None = None
+    # list of annual EV/Sales values (oldest -> newest), one per year, max 5 years
+    historical_ev_sales_5y: list[float] | None = None
     # provider tracking
     source_chain: list[str] = field(default_factory=list)
     fetch_errors: list[str] = field(default_factory=list)

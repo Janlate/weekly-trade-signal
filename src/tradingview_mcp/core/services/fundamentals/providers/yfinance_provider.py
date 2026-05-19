@@ -136,6 +136,65 @@ class YfinanceProvider(FinancialProvider):
                     series = [abs(x) for x in series]
                 setattr(result, attr, series)
 
+        # Historical P/E and EV/Sales series — for Q18 percentile comparison
+        # Approach: use year-end closing prices (Dec 31 of each fiscal year) + annual EPS/Revenue
+        try:
+            hist = t.history(period="5y", interval="1mo", auto_adjust=True)
+            if hist is not None and not hist.empty and result.net_income_5y and result.diluted_shares_5y:
+                # Number of annual data points available
+                n_years = min(len(result.net_income_5y), len(result.diluted_shares_5y),
+                              len(result.revenue_5y) if result.revenue_5y else 9999)
+                pe_series: list[float] = []
+                ev_sales_series: list[float] = []
+
+                # Build year-end price for each of the last n_years annual periods
+                # yfinance income_stmt columns are newest-first; we reversed to oldest->newest
+                # Use the December close price for each calendar year
+                hist.index = hist.index.tz_localize(None) if hist.index.tzinfo is not None else hist.index
+                for idx in range(n_years):
+                    # idx 0 = oldest year; idx -1 = most recent year
+                    year_offset = n_years - 1 - idx  # 0 = latest year
+                    import datetime
+                    year = datetime.date.today().year - year_offset
+                    # Get the last closing price in that calendar year
+                    year_prices = hist[hist.index.year == year]["Close"]
+                    if year_prices.empty:
+                        # Try prior December if calendar year boundary shifts
+                        year_prices = hist[hist.index.year == year - 1]["Close"]
+                    if year_prices.empty:
+                        continue
+                    price_year_end = float(year_prices.iloc[-1])
+
+                    ni = result.net_income_5y[idx]
+                    shares = result.diluted_shares_5y[idx]
+                    eps = ni / shares if shares > 0 else 0.0
+                    if eps > 0:
+                        pe = price_year_end / eps
+                        pe_series.append(pe)
+                    else:
+                        pe_series.append(float("nan"))
+
+                    # EV/Sales: approximate EV using price * shares + debt - cash at that year
+                    rev_y = result.revenue_5y[idx] if result.revenue_5y and idx < len(result.revenue_5y) else 0.0
+                    debt_y = result.total_debt_5y[idx] if result.total_debt_5y and idx < len(result.total_debt_5y) else 0.0
+                    cash_y = result.cash_5y[idx] if result.cash_5y and idx < len(result.cash_5y) else 0.0
+                    mktcap_y = price_year_end * shares if shares > 0 else 0.0
+                    ev_y = mktcap_y + max(debt_y - cash_y, 0.0)
+                    if rev_y > 0:
+                        ev_sales_series.append(ev_y / rev_y)
+                    else:
+                        ev_sales_series.append(float("nan"))
+
+                # Filter out NaN; only store if we have at least 2 valid points
+                valid_pe = [v for v in pe_series if v == v and v > 0]  # NaN check via self-equality
+                valid_evs = [v for v in ev_sales_series if v == v and v > 0]
+                if len(valid_pe) >= 2:
+                    result.historical_pe_5y = pe_series
+                if len(valid_evs) >= 2:
+                    result.historical_ev_sales_5y = ev_sales_series
+        except Exception as e:
+            result.fetch_errors.append(f"yfinance: historical percentile fetch failed: {e}")
+
         # EBITDA = Operating Income + D&A (correct for capital-intensive sectors)
         if result.operating_income_5y and result.da_5y and len(result.da_5y) == len(result.operating_income_5y):
             result.ebitda_5y = [op + da for op, da in zip(result.operating_income_5y, result.da_5y)]

@@ -86,22 +86,71 @@ def score_layer_3(f: TickerFinancials) -> LayerScore:
     else:
         fcf_score = 0
 
-    # CCC trend (Phase 1: skip if data incomplete; neutral)
-    ccc_score = 2  # neutral baseline; refine when inventory/receivables available
+    # CCC computation — expose detailed metrics for Q10 checklist
+    ccc_days: float | None = None
+    ccc_trend: float | None = None   # 3y OLS slope of CCC (positive = deteriorating)
+    inventory_days_latest: float | None = None
+    receivable_days_latest: float | None = None
+
+    ccc_score = 2  # neutral baseline
     if f.inventory_5y and f.receivables_5y and f.cogs_5y:
-        # CCC = DIO + DSO - DPO; lower is better
-        inv_latest, rec_latest = f.inventory_5y[-1], f.receivables_5y[-1]
-        cogs_latest = f.cogs_5y[-1] if f.cogs_5y[-1] else rev[-1] * 0.6
-        dio = (inv_latest / cogs_latest) * 365 if cogs_latest else 0
-        dso = (rec_latest / rev[-1]) * 365 if rev[-1] else 0
-        ccc = dio + dso
-        # below 60d great, 60-120 OK, 120+ caution
-        if ccc < 60:
+        def _compute_ccc_for_year(
+            inv: float, rec: float, pay: float,
+            cogs: float, revenue: float,
+        ) -> float:
+            """Compute CCC = DIO + DSO - DPO for one year."""
+            c = cogs if cogs > 0 else revenue * 0.6
+            dio = (inv / c) * 365 if c > 0 else 0.0
+            dso = (rec / revenue) * 365 if revenue > 0 else 0.0
+            dpo = (pay / c) * 365 if c > 0 else 0.0
+            return dio + dso - dpo
+
+        n = min(
+            len(f.inventory_5y), len(f.receivables_5y), len(f.cogs_5y),
+            len(rev), len(f.payables_5y) if f.payables_5y else 9999,
+        )
+        pays = f.payables_5y if f.payables_5y else [0.0] * n
+
+        ccc_series: list[float] = []
+        for i in range(-n, 0):
+            pay_i = pays[i] if abs(i) <= len(pays) else 0.0
+            ccc_i = _compute_ccc_for_year(
+                f.inventory_5y[i], f.receivables_5y[i], pay_i,
+                f.cogs_5y[i], rev[i],
+            )
+            ccc_series.append(ccc_i)
+
+        ccc_days = ccc_series[-1]
+
+        # Latest-year component breakdown (for evidence)
+        cogs_lat = f.cogs_5y[-1] if f.cogs_5y[-1] > 0 else rev[-1] * 0.6
+        inventory_days_latest = (f.inventory_5y[-1] / cogs_lat) * 365 if cogs_lat > 0 else 0.0
+        receivable_days_latest = (f.receivables_5y[-1] / rev[-1]) * 365 if rev[-1] > 0 else 0.0
+
+        # 3-year CCC trend via OLS slope
+        if len(ccc_series) >= 3:
+            recent = ccc_series[-3:]
+            xs = list(range(len(recent)))
+            x_mean = sum(xs) / len(xs)
+            y_mean = sum(recent) / len(recent)
+            denom = sum((x - x_mean) ** 2 for x in xs)
+            ccc_trend = (
+                sum((xs[i] - x_mean) * (recent[i] - y_mean) for i in range(len(xs))) / denom
+                if denom > 0 else 0.0
+            )
+        else:
+            ccc_trend = 0.0
+
+        # Score: < 60d great; 60–90 OK; > 90 caution; rising trend penalises
+        if ccc_days < 60:
             ccc_score = 2
-        elif ccc < 120:
+        elif ccc_days < 90:
             ccc_score = 1
         else:
             ccc_score = 0
+        # Deteriorating trend (slope > 5 days/year) → subtract 1
+        if ccc_trend is not None and ccc_trend > 5:
+            ccc_score = max(0, ccc_score - 1)
 
     # Historical ROIC penalty: if 40%+ of op_income years are negative,
     # the company has a significant track record of capital destruction.
@@ -139,7 +188,12 @@ def score_layer_3(f: TickerFinancials) -> LayerScore:
             "fcf_ni_ratio_avg": avg_fcf_ni,
             "sbc_adjusted": is_tech,
             "historical_loss_penalty": historical_loss_penalty,
-            "roic_3y_avg": roic_3y_avg,   # new key — None for non-cyclicals
+            "roic_3y_avg": roic_3y_avg,       # None for non-cyclicals
+            # CCC fields — for Q10 checklist
+            "ccc_days": ccc_days,             # latest year's CCC in days (None if data missing)
+            "ccc_trend": ccc_trend,           # 3y OLS slope (positive = deteriorating, None if missing)
+            "inventory_days_latest": inventory_days_latest,
+            "receivable_days_latest": receivable_days_latest,
         },
         data_completeness=1.0,
     )
