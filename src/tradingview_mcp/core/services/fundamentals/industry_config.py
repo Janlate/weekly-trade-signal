@@ -16,24 +16,26 @@ WACC_DEFAULTS: dict[str, float] = {
 }
 
 INDUSTRY_GROWTH_TIERS: dict[str, str] = {
-    "10": "mid",     # Energy (cyclical mid)
-    "15": "slow",    # Materials
-    "20": "mid",     # Industrials
-    "25": "fast",    # Consumer Discretionary
-    "30": "slow",    # Staples
-    "35": "mid",     # Healthcare
-    "40": "mid",     # Financials
-    "45": "fast",    # IT
-    "50": "fast",    # Communication
-    "55": "slow",    # Utilities
-    "60": "mid",     # REIT
+    "10": "cyclical",  # Energy — evaluated by trough-recovery, not CAGR
+    "15": "cyclical",  # Materials — same; also cyclical sector per CYCLICAL_SECTORS
+    "20": "mid",       # Industrials
+    "25": "mid",       # Consumer Discretionary (mature: Retail, Auto Dealers)
+    "30": "slow",      # Staples
+    "35": "mid",       # Healthcare
+    "40": "mid",       # Financials
+    "45": "fast",      # IT (growth tech/semis)
+    "50": "mid",       # Communication Services — mature platforms (GOOGL, META) grow 8-15%
+    "55": "slow",      # Utilities
+    "60": "mid",       # REIT
 }
 
 GROWTH_BANDS: dict[str, tuple[float, float]] = {
-    "slow":  (0.03, 0.08),
-    "mid":   (0.08, 0.15),
-    "fast":  (0.15, 0.30),
-    "hyper": (0.30, 1.00),
+    "slow":     (0.03, 0.08),
+    "mid":      (0.08, 0.15),
+    "fast":     (0.15, 0.30),
+    "hyper":    (0.30, 1.00),
+    # "cyclical" has no band — Layer 1 uses trough-recovery logic instead
+    "cyclical": (0.00, 1.00),  # sentinel only; not used for base scoring
 }
 
 INDUSTRY_MARGIN_MEDIANS: dict[str, dict[str, float]] = {

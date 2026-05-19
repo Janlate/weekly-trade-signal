@@ -1,7 +1,7 @@
 """Layer 3 — Growth Quality / FCF + ROIC — Gate."""
 from __future__ import annotations
 
-from tradingview_mcp.core.services.fundamentals.industry_config import get_wacc
+from tradingview_mcp.core.services.fundamentals.industry_config import get_wacc, is_cyclical
 from tradingview_mcp.core.services.fundamentals.providers.base import TickerFinancials
 from tradingview_mcp.core.services.fundamentals.schemas import LayerScore
 from tradingview_mcp.core.services.fundamentals.scorers._utils import clamp, safe_div
@@ -24,11 +24,27 @@ def score_layer_3(f: TickerFinancials) -> LayerScore:
         )
 
     wacc = get_wacc(f.industry)
+    cyclical = is_cyclical(f.industry, f.sub_industry)
 
     # NOPAT ≈ OpInc × (1 - tax_rate) — use 0.21 default US corporate
     tax_rate = 0.21
     nopat_latest = op[-1] * (1 - tax_rate)
     roic = safe_div(nopat_latest, ic[-1], default=-1.0)
+
+    # For cyclicals: compute 3-year average ROIC to avoid single-trough-year distortion.
+    # A trough year with depressed op-income should not FAIL the gate alone.
+    roic_3y_avg: float | None = None
+    if cyclical and len(op) >= 3 and len(ic) >= 3:
+        nopat_3y = [op[i] * (1 - tax_rate) for i in range(-3, 0)]
+        roic_3y_vals = [
+            safe_div(nopat_3y[i], ic[-(3 - i)], default=None)
+            for i in range(3)
+        ]
+        valid_3y = [r for r in roic_3y_vals if r is not None]
+        roic_3y_avg = sum(valid_3y) / len(valid_3y) if valid_3y else roic
+
+    # For cyclicals: use 3y-average ROIC for spread scoring so a trough year doesn't FAIL
+    roic_for_spread = roic_3y_avg if (cyclical and roic_3y_avg is not None) else roic
 
     # FCF (adjust SBC for tech)
     is_tech = f.industry in _TECH_GICS
@@ -45,8 +61,8 @@ def score_layer_3(f: TickerFinancials) -> LayerScore:
             fcf_ni_ratios.append(fcf_5y[i] / ni[i])
     avg_fcf_ni = sum(fcf_ni_ratios) / len(fcf_ni_ratios) if fcf_ni_ratios else 0
 
-    # ROIC - WACC spread
-    spread = roic - wacc
+    # ROIC - WACC spread (uses cyclical-adjusted roic_for_spread)
+    spread = roic_for_spread - wacc
     if spread >= 0.10:
         spread_score = 5
     elif spread >= 0.05:
@@ -90,26 +106,40 @@ def score_layer_3(f: TickerFinancials) -> LayerScore:
     # Historical ROIC penalty: if 40%+ of op_income years are negative,
     # the company has a significant track record of capital destruction.
     # Subtract 2 from raw to push CAUTION → FAIL in borderline cases.
+    # For cyclicals: only count years where op_income < 0 AND it's not just a trough.
+    # Threshold raised to 50% for cyclicals to account for normal cycle troughs.
     negative_op_years = sum(1 for o in op if o < 0)
-    historical_loss_penalty = 2 if negative_op_years / len(op) >= 0.4 else 0
+    loss_threshold = 0.50 if cyclical else 0.40
+    historical_loss_penalty = 2 if negative_op_years / len(op) >= loss_threshold else 0
 
     raw = spread_score + fcf_score + ccc_score - historical_loss_penalty
     score = clamp(raw, 0, 10)
     verdict = "PASS" if score >= 7 else ("CAUTION" if score >= 4 else "FAIL")
 
+    cyclical_note = ""
+    if cyclical and roic_3y_avg is not None:
+        cyclical_note = f" [cyclical: 3y-avg ROIC {roic_3y_avg*100:.1f}% used for spread]"
+
     rationale = (
         f"ROIC {roic*100:.1f}% vs WACC {wacc*100:.0f}% (spread {spread*100:+.1f}pp); "
         f"FCF/NI 3y avg {avg_fcf_ni:.2f}"
         + (" [SBC-adjusted]" if is_tech else "")
+        + cyclical_note
         + (f" [historical-loss-penalty -{historical_loss_penalty}]" if historical_loss_penalty else "")
     )
 
     return LayerScore(
         layer_id=3, name="Growth Quality / FCF", score=score, verdict=verdict,
         rationale=rationale,
-        inputs={"roic": roic, "wacc": wacc, "spread": spread,
-                "fcf_5y": fcf_5y, "fcf_ni_ratio_avg": avg_fcf_ni,
-                "sbc_adjusted": is_tech,
-                "historical_loss_penalty": historical_loss_penalty},
+        inputs={
+            "roic": roic,
+            "wacc": wacc,
+            "spread": spread,
+            "fcf_5y": fcf_5y,
+            "fcf_ni_ratio_avg": avg_fcf_ni,
+            "sbc_adjusted": is_tech,
+            "historical_loss_penalty": historical_loss_penalty,
+            "roic_3y_avg": roic_3y_avg,   # new key — None for non-cyclicals
+        },
         data_completeness=1.0,
     )

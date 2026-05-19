@@ -53,3 +53,61 @@ def percentile_rank(value: float, distribution: Sequence[float]) -> float:
         return 0.5
     leq = sum(1 for x in distribution if x <= value)
     return leq / len(distribution)
+
+
+def cyclical_trough_recovery_score(
+    rev_series: Sequence[float],
+) -> tuple[float, str, dict]:
+    """Score cyclical revenue by peak-trough-recovery heuristic (0-6).
+
+    Logic (per framework.md §1 cyclical):
+    - Does NOT penalise for low CAGR.
+    - Rewards: latest revenue >= prior peak × 0.95 (recovered).
+    - Rewards: minimum in second half > minimum in first half (rising base).
+    - Penalises: latest year still below 70% of series peak (deep trough).
+
+    Returns (score 0-6, rationale_fragment, extra_inputs_dict).
+    Minimum 4 data points required; caller must enforce hard-min before calling.
+    """
+    s = list(rev_series)
+    n = len(s)
+    if n < 4:
+        return 0.0, "insufficient data for trough-recovery", {"trough_recovery": None}
+
+    peak_all = max(s)
+    latest = s[-1]
+    recovery_ratio = latest / peak_all if peak_all > 0 else 0.0
+
+    # Split series into two halves to detect rising base
+    mid = n // 2
+    first_half_min = min(s[:mid]) if mid > 0 else s[0]
+    second_half_min = min(s[mid:]) if (n - mid) > 0 else s[-1]
+    rising_base = second_half_min > first_half_min
+
+    # Score components
+    if recovery_ratio >= 0.95:
+        recovery_score = 4  # fully recovered to prior peak
+    elif recovery_ratio >= 0.80:
+        recovery_score = 3  # largely recovered
+    elif recovery_ratio >= 0.65:
+        recovery_score = 2  # partial recovery
+    else:
+        recovery_score = 0  # still deep in trough
+
+    base_bonus = 2 if rising_base else 0  # rising trough-floor = structural improvement
+
+    raw = recovery_score + base_bonus
+    score = clamp(raw, 0, 6)
+
+    rationale_fragment = (
+        f"recovery_ratio={recovery_ratio:.2f} (latest/peak); "
+        f"rising_base={'yes' if rising_base else 'no'} "
+        f"(trough1={first_half_min:.0f} vs trough2={second_half_min:.0f})"
+    )
+    extra = {
+        "trough_recovery": recovery_ratio,
+        "rising_base": rising_base,
+        "peak_revenue": peak_all,
+        "latest_revenue": latest,
+    }
+    return score, rationale_fragment, extra
