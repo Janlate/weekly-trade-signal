@@ -66,6 +66,42 @@ CYCLICAL_SUB_INDUSTRIES: set[tuple[str, str]] = {
 }
 
 
+# ─── Financial-sector routing (Phase 4) ──────────────────────────────────────
+
+FINANCIAL_INDUSTRIES: dict[str, list[str]] = {
+    "bank": [
+        "Banks—Diversified", "Banks—Regional", "Capital Markets",
+        "Financial—Credit Services", "Financial Conglomerates",
+    ],
+    "insurance": [
+        "Insurance—Life", "Insurance—Property & Casualty",
+        "Insurance—Diversified", "Insurance—Reinsurance",
+    ],
+    "reit": [
+        "REIT—Office", "REIT—Industrial", "REIT—Retail", "REIT—Residential",
+        "REIT—Healthcare", "REIT—Diversified", "REIT—Hotel & Motel",
+        "Real Estate—Diversified", "Real Estate—Services",
+    ],
+}
+
+
+def financial_scorer_for(industry: str) -> str | None:
+    """Return 'bank' | 'insurance' | 'reit' | None.
+
+    Visa/Mastercard edge case: sector='Financial Services' but industry=
+    'Credit Services' -> returns None (routes to GenericScorer).
+    The FINANCIAL_INDUSTRIES list deliberately excludes 'Credit Services'
+    (un-prefixed) so that V/MA fall through to None.
+    """
+    if not industry:
+        return None
+    low = industry.lower()
+    for kind, names in FINANCIAL_INDUSTRIES.items():
+        if any(n.lower() in low for n in names):
+            return kind
+    return None
+
+
 def get_wacc(gics_sector: str) -> float:
     return WACC_DEFAULTS.get(gics_sector, 0.085)
 

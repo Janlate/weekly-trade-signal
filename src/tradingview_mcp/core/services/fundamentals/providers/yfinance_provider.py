@@ -29,6 +29,27 @@ _BS_FIELDS = {
     "Accounts Receivable": "receivables_5y",
     "Accounts Payable": "payables_5y",
 }
+# Financial-sector income statement row labels (yfinance) — Phase 4
+_BANK_INCOME_FIELDS: dict[str, str] = {
+    "Interest Income": "interest_income_5y",
+    "Non Interest Income": "noninterest_income_5y",
+    "Total Expenses": "_bank_noninterest_expense_5y",  # scratch key for L3 efficiency ratio
+}
+_BANK_BS_FIELDS: dict[str, str] = {
+    "Net Loans": "total_loans_5y",
+    "Total Deposits": "total_deposits_5y",
+}
+_INSURANCE_INCOME_FIELDS: dict[str, str] = {
+    "Net Premiums Written": "premium_earned_5y",
+    "Premiums Earned": "premium_earned_5y",
+    "Claims And Losses": "losses_incurred_5y",
+    "Underwriting Expenses": "expenses_incurred_5y",
+    "Net Investment Income": "investment_income_fin_5y",
+}
+_REIT_INCOME_FIELDS: dict[str, str] = {
+    "Total Revenue": "rental_income_5y",   # fallback — REITs book rental as revenue
+}
+
 _CF_FIELDS = {
     "Operating Cash Flow": "ocf_5y",
     "Capital Expenditure": "capex_5y",
@@ -96,11 +117,15 @@ class YfinanceProvider(FinancialProvider):
         if not info or not info.get("currentPrice"):
             return None
 
+        sector_str = info.get("sector", "")
+        industry_str = info.get("industry", "")
         result = TickerFinancials(
             ticker=ticker,
-            industry=_SECTOR_TO_GICS.get(info.get("sector", ""), ""),
-            sub_industry=info.get("industry", ""),
-            gics_full=f'{info.get("sector", "")} / {info.get("industry", "")}',
+            industry=_SECTOR_TO_GICS.get(sector_str, ""),
+            sub_industry=industry_str,
+            gics_full=f'{sector_str} / {industry_str}',
+            sector_name=sector_str,
+            industry_name=industry_str,
             price_current=float(info.get("currentPrice") or 0.0),
             market_cap_current=float(info.get("marketCap") or 0.0),
             forward_eps_growth_1y=info.get("earningsGrowth"),
@@ -135,6 +160,44 @@ class YfinanceProvider(FinancialProvider):
                 if attr in {"capex_5y", "buyback_5y", "dividend_paid_5y", "da_5y"}:
                     series = [abs(x) for x in series]
                 setattr(result, attr, series)
+
+        # ── Financial-sector supplemental fields (Phase 4) ───────────────────
+        # Try to fill bank / insurance / REIT fields from yfinance as a best-effort
+        # fallback when EDGAR is missing. Soft-fail to None on any missing row.
+        sector_lo = sector_str.lower()
+        industry_lo = industry_str.lower()
+        _is_bank = "bank" in industry_lo or "capital market" in industry_lo
+        _is_insurance = "insurance" in industry_lo
+        _is_reit = "reit" in industry_lo or "real estate" in sector_lo
+
+        if _is_bank:
+            for label, attr in _BANK_INCOME_FIELDS.items():
+                series = _extract_series(fin, label)
+                if series and not attr.startswith("_"):  # skip scratch keys
+                    if not getattr(result, attr, None):
+                        setattr(result, attr, series)
+            for label, attr in _BANK_BS_FIELDS.items():
+                series = _extract_series(bs, label)
+                if series and not getattr(result, attr, None):
+                    setattr(result, attr, series)
+
+        if _is_insurance:
+            for label, attr in _INSURANCE_INCOME_FIELDS.items():
+                series = _extract_series(fin, label)
+                if series and not getattr(result, attr, None):
+                    setattr(result, attr, series)
+
+        if _is_reit:
+            # Rental income: try revenue as proxy if not already populated
+            if not result.rental_income_5y and result.revenue_5y:
+                result.rental_income_5y = result.revenue_5y[:]
+            # FFO = Net Income + D&A - gains (gains not available here → use NI + D&A)
+            if (not result.ffo_5y and result.net_income_5y and result.da_5y):
+                n = min(len(result.net_income_5y), len(result.da_5y))
+                result.ffo_5y = [
+                    result.net_income_5y[-(n - i)] + result.da_5y[-(n - i)]
+                    for i in range(n)
+                ]
 
         # Historical P/E and EV/Sales series — for Q18 percentile comparison
         # Approach: use year-end closing prices (Dec 31 of each fiscal year) + annual EPS/Revenue

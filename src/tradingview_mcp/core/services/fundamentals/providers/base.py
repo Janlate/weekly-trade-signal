@@ -33,6 +33,24 @@ class TickerFinancials:
     cogs_5y: list[float] = field(default_factory=list)
     dividend_paid_5y: list[float] = field(default_factory=list)
     buyback_5y: list[float] = field(default_factory=list)
+    # ── Financial-sector fields (Phase 4) — None = not available ─────────────
+    # Bank fields
+    interest_income_5y: list[float] | None = None
+    noninterest_income_5y: list[float] | None = None
+    provision_loan_losses_5y: list[float] | None = None
+    total_loans_5y: list[float] | None = None
+    total_deposits_5y: list[float] | None = None
+    # Insurance fields
+    premium_earned_5y: list[float] | None = None
+    losses_incurred_5y: list[float] | None = None
+    expenses_incurred_5y: list[float] | None = None
+    investment_income_fin_5y: list[float] | None = None  # disambiguate from generic
+    # REIT fields
+    ffo_5y: list[float] | None = None          # derived: NI + D&A - gains on property sales
+    rental_income_5y: list[float] | None = None
+    # sector / industry as plain strings (for routing) — set by yfinance provider
+    sector_name: str = ""
+    industry_name: str = ""
     # current price / market data
     price_current: float = 0.0
     market_cap_current: float = 0.0

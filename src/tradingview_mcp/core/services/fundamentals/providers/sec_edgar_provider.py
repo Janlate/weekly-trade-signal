@@ -39,6 +39,45 @@ _CONCEPT_MAP: dict[str, list[str]] = {
     "sbc_5y": ["ShareBasedCompensation"],
     "buyback_5y": ["PaymentsForRepurchaseOfCommonStock"],
     "dividend_paid_5y": ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"],
+    # ── Bank fields (Phase 4) ───────────────────────────────────────────────
+    "interest_income_5y": [
+        "InterestAndDividendIncomeOperating",
+        "InterestIncomeOperating",
+    ],
+    "noninterest_income_5y": ["NoninterestIncome"],
+    "provision_loan_losses_5y": [
+        "ProvisionForLoanAndLeaseLosses",
+        "ProvisionForLoanLeaseAndOtherLosses",
+    ],
+    "total_loans_5y": [
+        "LoansAndLeasesReceivableNetReportedAmount",
+        "LoansAndLeasesReceivableNet",
+    ],
+    "total_deposits_5y": ["Deposits"],
+    # ── Insurance fields (Phase 4) ──────────────────────────────────────────
+    "premium_earned_5y": [
+        "PremiumsEarnedNet",
+        "PremiumsWrittenNet",
+    ],
+    "losses_incurred_5y": [
+        "PolicyholderBenefitsAndClaimsIncurredNet",
+        "LiabilityForFuturePolicyBenefitsAndUnpaidClaimsAdjustmentExpense",
+        "BenefitsLossesAndExpenses",
+    ],
+    "expenses_incurred_5y": [
+        "OtherUnderwritingExpenseOfInsurer",
+        "InsuranceCommissionsAndFees",
+    ],
+    "investment_income_fin_5y": [
+        "NetInvestmentIncome",
+        "InvestmentIncomeNet",
+    ],
+    # ── REIT fields (Phase 4) ────────────────────────────────────────────────
+    "rental_income_5y": [
+        "OperatingLeasesIncomeStatementLeaseRevenue",
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "Revenues",
+    ],
 }
 
 
@@ -150,6 +189,27 @@ class SecEdgarProvider(FinancialProvider):
                 "sec_edgar: D&A missing -- EBITDA proxy = OpInc"
             )
 
+        # REIT FFO = Net Income + D&A - Gains on property sales
+        # EDGAR tag for gains: GainsLossesOnSalesOfRealEstate / GainLossOnSaleOfProperties
+        gains_tags = ["GainsLossesOnSalesOfRealEstate", "GainLossOnSaleOfProperties"]
+        gains_5y: list[float] = []
+        for tag in gains_tags:
+            if tag in facts:
+                s = _annual_series(facts[tag].get("units", {}))
+                if s:
+                    gains_5y = s
+                    break
+
+        if result.net_income_5y and result.da_5y:
+            n = min(len(result.net_income_5y), len(result.da_5y))
+            ffo: list[float] = []
+            for i in range(n):
+                ni_i = result.net_income_5y[-(n - i)]
+                da_i = result.da_5y[-(n - i)]
+                gain_i = gains_5y[-(n - i)] if len(gains_5y) >= n else 0.0
+                ffo.append(ni_i + da_i - gain_i)
+            result.ffo_5y = ffo
+
         # Invested Capital = Total Debt + Equity
         if (
             result.total_debt_5y
@@ -163,7 +223,11 @@ class SecEdgarProvider(FinancialProvider):
             result.invested_capital_5y = result.equity_5y[:]
 
         # Return None if no meaningful financial data was extracted
-        if not any([result.revenue_5y, result.net_income_5y]):
+        if not any([
+            result.revenue_5y, result.net_income_5y,
+            result.interest_income_5y, result.premium_earned_5y,
+            result.rental_income_5y,
+        ]):
             return None
 
         return result
