@@ -85,6 +85,16 @@ FINANCIAL_INDUSTRIES: dict[str, list[str]] = {
 }
 
 
+def _normalize_industry(s: str) -> str:
+    """Normalise industry string for comparison.
+
+    yfinance returns 'Banks - Diversified' (space-dash-space); our spec uses
+    'Banks—Diversified' (em-dash). Collapse both to 'banks diversified' for
+    substring matching.
+    """
+    return s.lower().replace("—", " ").replace(" - ", " ").replace("-", " ")
+
+
 def financial_scorer_for(industry: str) -> str | None:
     """Return 'bank' | 'insurance' | 'reit' | None.
 
@@ -95,9 +105,9 @@ def financial_scorer_for(industry: str) -> str | None:
     """
     if not industry:
         return None
-    low = industry.lower()
+    low = _normalize_industry(industry)
     for kind, names in FINANCIAL_INDUSTRIES.items():
-        if any(n.lower() in low for n in names):
+        if any(_normalize_industry(n) in low for n in names):
             return kind
     return None
 

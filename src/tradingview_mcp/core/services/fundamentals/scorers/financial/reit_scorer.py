@@ -23,6 +23,8 @@ from tradingview_mcp.core.services.fundamentals.industry_config import is_cyclic
 from tradingview_mcp.core.services.fundamentals.scorers._utils import (
     cagr, clamp, linear_slope, safe_div,
 )
+import statistics as _statistics
+
 from tradingview_mcp.core.services.fundamentals.scorers.layer_04_moat import score_layer_4
 from tradingview_mcp.core.services.fundamentals.scorers.layer_06_capital_alloc import score_layer_6
 from tradingview_mcp.core.services.fundamentals.scorers.layer_07_valuation import score_layer_7
@@ -153,9 +155,12 @@ def _score_l3_reit(f: TickerFinancials) -> LayerScore:
     ni = f.net_income_5y or []
 
     # If FFO absent, fall back to net income as rough proxy
+    # Note: NI-proxy payout ratio will be inflated for REITs (D&A not added back)
+    using_ni_proxy = False
     if not ffo and ni:
         ffo = ni
         ffo_source = "ni_proxy"
+        using_ni_proxy = True
     else:
         ffo_source = "ffo"
 
@@ -186,14 +191,20 @@ def _score_l3_reit(f: TickerFinancials) -> LayerScore:
 
     payout_avg = sum(payout_ratios) / len(payout_ratios) if payout_ratios else 0.80
 
-    # Score: payout <60% = very sustainable, <80% = pass, <100% = caution, >=100% = fail
-    if payout_avg < 0.60:
+    # When using NI proxy (no D&A), the payout ratio is overstated.
+    # Real FFO = NI + D&A (often 30-50% of NI for industrial/telecom REITs).
+    # Apply a correction: adjust effective threshold upward by 40% for NI proxy.
+    payout_threshold_pass = 0.80 if not using_ni_proxy else 1.20
+    payout_threshold_caution = 1.00 if not using_ni_proxy else 1.50
+
+    # Score: payout vs threshold
+    if payout_avg < payout_threshold_pass * 0.75:
         payout_score = 5
-    elif payout_avg < 0.80:
+    elif payout_avg < payout_threshold_pass:
         payout_score = 4
-    elif payout_avg < 0.90:
+    elif payout_avg < payout_threshold_caution:
         payout_score = 2
-    elif payout_avg < 1.00:
+    elif payout_avg < payout_threshold_caution * 1.15:
         payout_score = 1
     else:
         payout_score = 0
@@ -214,7 +225,8 @@ def _score_l3_reit(f: TickerFinancials) -> LayerScore:
         layer_id=3, name="Quality of Growth — FFO (REIT)",
         score=score, verdict=verdict,
         rationale=(
-            f"FFO payout 3y avg {payout_avg*100:.1f}% (pass<80%) · "
+            f"FFO payout 3y avg {payout_avg*100:.1f}% "
+            f"(pass<{payout_threshold_pass*100:.0f}%{'*adj for NI proxy' if using_ni_proxy else ''}) · "
             f"FFO CAGR {ffo_g*100:.1f}% [{ffo_source}]"
         ),
         inputs={"ffo_payout_avg": payout_avg, "ffo_cagr": ffo_g,
@@ -292,6 +304,50 @@ def _score_l5_reit(f: TickerFinancials) -> LayerScore:
     )
 
 
+def _score_l4_reit(f: TickerFinancials) -> LayerScore:
+    """L4 — REIT moat proxy. Try generic; fall back to rental income stability + scale."""
+    l4_generic = score_layer_4(f)
+    if l4_generic.verdict != "INSUFFICIENT_DATA":
+        return l4_generic
+
+    rental = f.rental_income_5y or []
+    ffo = f.ffo_5y or []
+    mc = f.market_cap_current
+
+    ref_series = ffo if ffo else rental
+    if not ref_series or len(ref_series) < _MIN_YEARS:
+        return LayerScore(
+            layer_id=4, name="Moat (REIT)", score=4, verdict="CAUTION",
+            rationale="[reit: moat data limited] neutral score 4",
+            inputs={"moat_override_applied": True, "roic_std": None, "gm_premium": None, "market_cap": mc},
+            data_completeness=0.3,
+        )
+
+    # FFO/rental income stability
+    cv = _statistics.pstdev(ref_series) / abs(sum(ref_series) / len(ref_series)) if sum(ref_series) != 0 else 1.0
+    if cv < 0.10:
+        consist = 3
+    elif cv < 0.20:
+        consist = 2
+    elif cv < 0.35:
+        consist = 1
+    else:
+        consist = 0
+
+    scale = 2 if mc >= 50e9 else (1 if mc >= 10e9 else 0)
+
+    raw = consist + scale
+    score_val = clamp(raw, 0, 7)
+    verdict = "PASS" if score_val >= 6 else ("CAUTION" if score_val >= 3 else "FAIL")
+    return LayerScore(
+        layer_id=4, name="Moat (REIT)", score=score_val, verdict=verdict,
+        rationale=f"[reit proxy] income CV {cv:.2f} · market cap ${mc/1e9:.0f}B",
+        inputs={"income_cv": cv, "consist": consist, "scale": scale,
+                "moat_override_applied": True, "roic_std": None, "gm_premium": None, "market_cap": mc},
+        data_completeness=0.6,
+    )
+
+
 def score(fin: TickerFinancials, scan_date: str | None = None) -> FundamentalReport:
     """Run all 8 layers for a REIT; return FundamentalReport."""
     scan_date = scan_date or date.today().isoformat()
@@ -299,7 +355,7 @@ def score(fin: TickerFinancials, scan_date: str | None = None) -> FundamentalRep
     l1 = _score_l1_reit(fin)
     l2 = _score_l2_reit(fin)
     l3 = _score_l3_reit(fin)
-    l4 = score_layer_4(fin)
+    l4 = _score_l4_reit(fin)
     l5 = _score_l5_reit(fin)
     l6 = score_layer_6(fin)
     l7 = score_layer_7(fin)

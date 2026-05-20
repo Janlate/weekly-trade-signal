@@ -20,6 +20,8 @@ from tradingview_mcp.core.services.fundamentals.industry_config import is_cyclic
 from tradingview_mcp.core.services.fundamentals.scorers._utils import (
     cagr, clamp, safe_div, linear_slope,
 )
+import statistics as _statistics
+
 from tradingview_mcp.core.services.fundamentals.scorers.layer_04_moat import score_layer_4
 from tradingview_mcp.core.services.fundamentals.scorers.layer_06_capital_alloc import score_layer_6
 from tradingview_mcp.core.services.fundamentals.scorers.layer_07_valuation import score_layer_7
@@ -183,15 +185,44 @@ def _score_l3_bank(f: TickerFinancials) -> LayerScore:
     op = f.operating_income_5y or []
 
     if not (ii and ie and ni_inc and op) or len(ii) < _MIN_YEARS:
-        # Fall back to generic L3 ROIC logic
+        # Bank-specific fallback: use net income trend as quality gate.
+        # Generic FCF/ROIC is meaningless for banks (OCF includes all loans).
+        ni = f.net_income_5y or []
+        if ni and len(ni) >= _MIN_YEARS:
+            ni_slope = linear_slope(ni[-3:])
+            neg_ni = sum(1 for n in ni if n < 0)
+            if ni_slope > 0 and neg_ni == 0:
+                score_val, verdict = 7, "PASS"
+            elif ni_slope >= 0 and neg_ni <= 1:
+                score_val, verdict = 5, "CAUTION"
+            elif neg_ni / len(ni) < 0.4:
+                score_val, verdict = 3, "CAUTION"
+            else:
+                score_val, verdict = 1, "FAIL"
+            return LayerScore(
+                layer_id=3, name="Quality of Growth — NI Trend (Bank, fallback)",
+                score=score_val, verdict=verdict,
+                rationale=(
+                    f"[bank: efficiency data unavailable] NI trend slope "
+                    f"{ni_slope/ni[-1]*100:+.1f}%/y · {neg_ni}/{len(ni)} loss years"
+                ),
+                inputs={"ni_slope": ni_slope, "neg_ni_years": neg_ni,
+                        "roic": None, "wacc": 0.09, "spread": None,
+                        "fcf_5y": [], "fcf_ni_ratio_avg": None,
+                        "sbc_adjusted": False, "historical_loss_penalty": 0,
+                        "roic_3y_avg": None,
+                        "ccc_days": None, "ccc_trend": None,
+                        "inventory_days_latest": None, "receivable_days_latest": None},
+                data_completeness=min(1.0, len(ni) / 5),
+            )
+        # If even NI is missing, use generic (may be INSUFFICIENT_DATA)
         from tradingview_mcp.core.services.fundamentals.scorers.layer_03_fcf_quality import score_layer_3
         generic = score_layer_3(f)
-        # Override name and rationale to signal fallback
         return LayerScore(
             layer_id=3, name="Quality of Growth (Bank, fallback ROIC)",
             score=generic.score, verdict=generic.verdict,
-            rationale="[bank: efficiency data unavailable, fallback to ROIC] " + generic.rationale,
-            inputs=generic.inputs, data_completeness=generic.data_completeness * 0.7,
+            rationale="[bank: all quality data unavailable, last-resort ROIC] " + generic.rationale,
+            inputs=generic.inputs, data_completeness=generic.data_completeness * 0.5,
         )
 
     n = min(len(ii), len(ie), len(ni_inc), len(op))
@@ -261,14 +292,51 @@ def _score_l5_bank(f: TickerFinancials) -> LayerScore:
     shares = f.diluted_shares_5y or []
 
     if not (loans and deposits) or len(loans) < 1:
-        # Fall back to generic balance sheet
-        from tradingview_mcp.core.services.fundamentals.scorers.layer_05_balance_sheet import score_layer_5
-        generic = score_layer_5(f)
+        # Bank balance sheet fallback: equity tier + dilution
+        # Use equity/debt ratio as rough capital adequacy proxy
+        equity = f.equity_5y or []
+        debt = f.total_debt_5y or []
+        shares = f.diluted_shares_5y or []
+
+        cap_ratio: float = 0.0
+        if equity and debt:
+            # Capital ratio = equity / (equity + debt) — higher is better for banks
+            cap_ratio = equity[-1] / (equity[-1] + debt[-1]) if (equity[-1] + debt[-1]) > 0 else 0.0
+            if cap_ratio >= 0.35:
+                cap_score = 5
+            elif cap_ratio >= 0.25:
+                cap_score = 4
+            elif cap_ratio >= 0.15:
+                cap_score = 3
+            else:
+                cap_score = 1
+        else:
+            cap_score = 3  # neutral
+
+        dil_score = 4
+        if len(shares) >= 3:
+            sc = cagr(shares[0], shares[-1], len(shares) - 1)
+            import math
+            if not math.isnan(sc):
+                dil_score = 4 if sc <= 0 else (3 if sc <= 0.03 else (2 if sc <= 0.05 else 0))
+
+        score_val = clamp(cap_score + dil_score, 0, 10)
+        verdict = "PASS" if score_val >= 7 else ("CAUTION" if score_val >= 4 else "FAIL")
+        rationale_str = (
+            f"[bank: LtD unavailable] Capital ratio {cap_ratio*100:.1f}%"
+            if (equity and debt)
+            else "[bank: L5 neutral fallback]"
+        )
         return LayerScore(
-            layer_id=5, name="Balance Sheet (Bank, fallback generic)",
-            score=generic.score, verdict=generic.verdict,
-            rationale="[bank: LtD data unavailable, fallback generic] " + generic.rationale,
-            inputs=generic.inputs, data_completeness=generic.data_completeness * 0.7,
+            layer_id=5, name="Balance Sheet (Bank, capital ratio fallback)",
+            score=score_val, verdict=verdict,
+            rationale=rationale_str,
+            inputs={"capital_ratio": cap_ratio if (equity and debt) else None,
+                    "cap_score": cap_score, "dilution_score": dil_score,
+                    "loan_to_deposit": None,
+                    "net_debt_ebitda": 1.0, "interest_coverage": 999,
+                    "shares_cagr": 0.0, "balance_quality": "bank_cap_ratio"},
+            data_completeness=0.6,
         )
 
     ltd = loans[-1] / deposits[-1] if deposits[-1] > 0 else 99.0
@@ -318,6 +386,62 @@ def _score_l5_bank(f: TickerFinancials) -> LayerScore:
     )
 
 
+def _score_l4_bank(f: TickerFinancials) -> LayerScore:
+    """L4 — Bank moat proxy: NI consistency + market cap scale.
+
+    If generic L4 can compute (has gross_profit / operating_income), use it.
+    Otherwise fall back to NI stability + scale as a reasonable proxy.
+    """
+    # Try generic first
+    l4_generic = score_layer_4(f)
+    if l4_generic.verdict != "INSUFFICIENT_DATA":
+        return l4_generic
+
+    # Bank-specific moat proxy
+    ni = f.net_income_5y or []
+    mc = f.market_cap_current
+
+    if not ni or len(ni) < _MIN_YEARS:
+        return LayerScore(
+            layer_id=4, name="Moat (Bank)",
+            score=4, verdict="CAUTION",
+            rationale="[bank: moat data limited] neutral score 4",
+            inputs={"moat_override_applied": True, "roic_std": None, "gm_premium": None, "market_cap": mc},
+            data_completeness=0.3,
+        )
+
+    # NI consistency (low std/mean ratio is good for a bank)
+    ni_cv = _statistics.pstdev(ni) / abs(sum(ni) / len(ni)) if sum(ni) != 0 else 1.0
+    if ni_cv < 0.10:
+        consistency_score = 3
+    elif ni_cv < 0.20:
+        consistency_score = 2
+    elif ni_cv < 0.35:
+        consistency_score = 1
+    else:
+        consistency_score = 0
+
+    # Scale score
+    if mc >= 100e9:
+        scale_score = 2
+    elif mc >= 20e9:
+        scale_score = 1
+    else:
+        scale_score = 0
+
+    raw = consistency_score + scale_score
+    score_val = clamp(raw, 0, 7)
+    verdict = "PASS" if score_val >= 6 else ("CAUTION" if score_val >= 3 else "FAIL")
+    return LayerScore(
+        layer_id=4, name="Moat (Bank)",
+        score=score_val, verdict=verdict,
+        rationale=f"[bank proxy] NI CV {ni_cv:.2f} · market cap ${mc/1e9:.0f}B",
+        inputs={"ni_cv": ni_cv, "consistency_score": consistency_score, "scale_score": scale_score,
+                "moat_override_applied": True, "roic_std": None, "gm_premium": None, "market_cap": mc},
+        data_completeness=0.6,
+    )
+
+
 def score(fin: TickerFinancials, scan_date: str | None = None) -> FundamentalReport:
     """Run all 8 layers for a bank; return FundamentalReport."""
     scan_date = scan_date or date.today().isoformat()
@@ -325,7 +449,7 @@ def score(fin: TickerFinancials, scan_date: str | None = None) -> FundamentalRep
     l1 = _score_l1_bank(fin)
     l2 = _score_l2_bank(fin)
     l3 = _score_l3_bank(fin)
-    l4 = score_layer_4(fin)
+    l4 = _score_l4_bank(fin)
     l5 = _score_l5_bank(fin)
     l6 = score_layer_6(fin)
     l7 = score_layer_7(fin)

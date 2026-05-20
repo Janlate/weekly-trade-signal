@@ -20,6 +20,8 @@ from tradingview_mcp.core.services.fundamentals.industry_config import is_cyclic
 from tradingview_mcp.core.services.fundamentals.scorers._utils import (
     cagr, clamp, linear_slope, safe_div,
 )
+import statistics as _statistics
+
 from tradingview_mcp.core.services.fundamentals.scorers.layer_04_moat import score_layer_4
 from tradingview_mcp.core.services.fundamentals.scorers.layer_06_capital_alloc import score_layer_6
 from tradingview_mcp.core.services.fundamentals.scorers.layer_07_valuation import score_layer_7
@@ -216,10 +218,24 @@ def _score_l3_insurance(f: TickerFinancials) -> LayerScore:
         if neg_op / len(op) >= 0.4:
             op_score = max(0, op_score - 2)
 
-    # Combine: use best of the two signals + some both-good bonus
-    # This avoids penalising a P&C insurer for low investment income
-    combined_base = max(inv_score, op_score)
-    both_good_bonus = 2 if inv_score >= 2 and op_score >= 3 else 0
+    # ── Path 3: net income trend (ultimate fallback when op_income absent) ─
+    ni_score = 0
+    ni = f.net_income_5y or []
+    if ni and len(ni) >= _MIN_YEARS and op_score == 0:
+        ni_slope = linear_slope(ni[-3:])
+        neg_ni = sum(1 for n in ni if n < 0)
+        if ni_slope > 0 and neg_ni == 0:
+            ni_score = 4
+        elif ni_slope >= 0 and neg_ni <= 1:
+            ni_score = 3
+        elif neg_ni / len(ni) < 0.4:
+            ni_score = 2
+        else:
+            ni_score = 0
+
+    # Combine: use best of the three signals + both-good bonus
+    combined_base = max(inv_score, op_score, ni_score)
+    both_good_bonus = 2 if (max(inv_score, ni_score) >= 2 and max(op_score, ni_score) >= 3) else 0
     score_val = clamp(combined_base + both_good_bonus, 0, 10)
     verdict = "PASS" if score_val >= 7 else ("CAUTION" if score_val >= 4 else "FAIL")
 
@@ -245,18 +261,23 @@ def _score_l3_insurance(f: TickerFinancials) -> LayerScore:
 
 def _score_l5_insurance(f: TickerFinancials) -> LayerScore:
     """L5 — Reserve adequacy proxy (equity / written premium) + dilution."""
-    premiums = f.premium_earned_5y or []
+    using_premium = bool(f.premium_earned_5y)
+    premiums = f.premium_earned_5y or f.revenue_5y or []  # fallback to revenue
     equity = f.equity_5y or []
     shares = f.diluted_shares_5y or []
 
+    # When using revenue as proxy (includes earned + non-earned), thresholds differ:
+    # Pure premium: pass >=1.0x; revenue proxy: pass >=0.25x (revenue > premiums)
+    pass_thresh = 1.0 if using_premium else 0.25
+    warn_thresh = 0.5 if using_premium else 0.12
+
     if premiums and equity and len(premiums) >= 1:
         reserve_ratio = equity[-1] / premiums[-1] if premiums[-1] > 0 else 0.0
-        # Pass: reserve_ratio >= 1.0 (equity covers at least one year of premiums)
-        if reserve_ratio >= 1.5:
+        if reserve_ratio >= pass_thresh * 1.5:
             res_score = 6
-        elif reserve_ratio >= 1.0:
+        elif reserve_ratio >= pass_thresh:
             res_score = 5
-        elif reserve_ratio >= 0.5:
+        elif reserve_ratio >= warn_thresh:
             res_score = 3
         else:
             res_score = 0
@@ -294,6 +315,56 @@ def _score_l5_insurance(f: TickerFinancials) -> LayerScore:
     )
 
 
+def _score_l4_insurance(f: TickerFinancials) -> LayerScore:
+    """L4 — Insurance moat proxy. Try generic first; fall back to NI stability + scale."""
+    l4_generic = score_layer_4(f)
+    if l4_generic.verdict != "INSUFFICIENT_DATA":
+        return l4_generic
+
+    ni = f.net_income_5y or []
+    premiums = f.premium_earned_5y or []
+    mc = f.market_cap_current
+
+    if not ni or len(ni) < _MIN_YEARS:
+        return LayerScore(
+            layer_id=4, name="Moat (Insurance)", score=4, verdict="CAUTION",
+            rationale="[insurance: moat data limited] neutral score 4",
+            inputs={"moat_override_applied": True, "roic_std": None, "gm_premium": None, "market_cap": mc},
+            data_completeness=0.3,
+        )
+
+    # NI stability OR strong upward trend — both are moat indicators
+    ni_cv = _statistics.pstdev(ni) / abs(sum(ni) / len(ni)) if sum(ni) != 0 else 1.0
+    ni_slope = linear_slope(ni)
+    ni_growth = cagr(ni[0], ni[-1], len(ni) - 1) if ni[0] > 0 else 0.0
+    if ni_cv < 0.10 or ni_growth >= 0.15:
+        consist = 3   # stable OR strongly growing
+    elif ni_cv < 0.25 or ni_growth >= 0.05:
+        consist = 2
+    else:
+        consist = 0
+
+    # Premium scale (larger = more stable)
+    prem_latest = premiums[-1] if premiums else 0
+    if prem_latest >= 50e9 or mc >= 100e9:
+        scale = 2
+    elif prem_latest >= 10e9 or mc >= 20e9:
+        scale = 1
+    else:
+        scale = 0
+
+    raw = consist + scale
+    score_val = clamp(raw, 0, 7)
+    verdict = "PASS" if score_val >= 6 else ("CAUTION" if score_val >= 3 else "FAIL")
+    return LayerScore(
+        layer_id=4, name="Moat (Insurance)", score=score_val, verdict=verdict,
+        rationale=f"[insurance proxy] NI CV {ni_cv:.2f} · market cap ${mc/1e9:.0f}B",
+        inputs={"ni_cv": ni_cv, "consist": consist, "scale": scale,
+                "moat_override_applied": True, "roic_std": None, "gm_premium": None, "market_cap": mc},
+        data_completeness=0.6,
+    )
+
+
 def score(fin: TickerFinancials, scan_date: str | None = None) -> FundamentalReport:
     """Run all 8 layers for an insurer; return FundamentalReport."""
     scan_date = scan_date or date.today().isoformat()
@@ -301,7 +372,7 @@ def score(fin: TickerFinancials, scan_date: str | None = None) -> FundamentalRep
     l1 = _score_l1_insurance(fin)
     l2 = _score_l2_insurance(fin)
     l3 = _score_l3_insurance(fin)
-    l4 = score_layer_4(fin)
+    l4 = _score_l4_insurance(fin)
     l5 = _score_l5_insurance(fin)
     l6 = score_layer_6(fin)
     l7 = score_layer_7(fin)
