@@ -80,6 +80,7 @@ FINANCIAL_INDUSTRIES: dict[str, list[str]] = {
     "reit": [
         "REIT—Office", "REIT—Industrial", "REIT—Retail", "REIT—Residential",
         "REIT—Healthcare", "REIT—Diversified", "REIT—Hotel & Motel",
+        "REIT—Specialty", "REIT—Mortgage",
         "Real Estate—Diversified", "Real Estate—Services",
     ],
 }
