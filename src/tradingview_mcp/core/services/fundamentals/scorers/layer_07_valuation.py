@@ -42,9 +42,19 @@ def score_layer_7(f: TickerFinancials) -> LayerScore:
     wacc = get_wacc(f.industry)
     rev_growth_hist = cagr(f.revenue_5y[0], f.revenue_5y[-1], len(f.revenue_5y) - 1)
     op_margin = f.operating_income_5y[-1] / f.revenue_5y[-1] if f.revenue_5y[-1] else 0
-    capex_pct = f.capex_5y[-1] / f.revenue_5y[-1] if f.revenue_5y[-1] else 0.05
+    capex_pct_raw = f.capex_5y[-1] / f.revenue_5y[-1] if f.revenue_5y[-1] else 0.05
     shares = f.diluted_shares_5y[-1]
     rev_latest = f.revenue_5y[-1]
+
+    # Cap capex_pct so FCF margin never goes negative in the DCF model.
+    # Companies with very high growth capex (AMZN, META, utilities) would
+    # otherwise produce negative fair values, making all downstream outputs
+    # (stop-loss, take-profit, MOS) nonsensical.
+    # Floor: NOPAT margin × (1 - 0.21) minus a minimum 2% FCF margin.
+    nopat_margin = op_margin * (1 - 0.21)
+    _max_capex = max(0.0, nopat_margin - 0.02)   # leaves at least 2% FCF margin
+    capex_pct = min(capex_pct_raw, _max_capex)
+    dcf_capex_capped = capex_pct < capex_pct_raw  # flag for UI/debug
 
     # 3-scenario DCF — guard against NaN from cagr() (which returns NaN when start <= 0)
     _growth = rev_growth_hist if (rev_growth_hist is not None and not math.isnan(rev_growth_hist)) else 0.08
@@ -148,7 +158,8 @@ def score_layer_7(f: TickerFinancials) -> LayerScore:
             "sensitivity": {"wacc_plus_1pp": fair_wacc_plus, "tg_minus_1pp": fair_tg_minus},
             "peg": peg, "peg_confidence": "MED", "ev_sales": ev_sales,
             "assumptions": {"rev_growth": base_growth, "op_margin": op_margin,
-                            "capex_pct": capex_pct, "wacc": wacc},
+                            "capex_pct": capex_pct, "capex_pct_raw": capex_pct_raw,
+                            "dcf_capex_capped": dcf_capex_capped, "wacc": wacc},
             # Q18 historical percentile fields
             "pe_5y_percentile": pe_5y_percentile,
             "pe_5y_series": pe_5y_series,
