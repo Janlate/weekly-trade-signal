@@ -55,7 +55,7 @@ def score_layer_1(f: TickerFinancials) -> LayerScore:
 
         # Still compute CAGR + CV as informational metadata (kept for API contract)
         g = cagr(rev[0], rev[-1], actual_years - 1)
-        yoy = [(rev[i + 1] - rev[i]) / rev[i] for i in range(len(rev) - 1)] if len(rev) >= 2 else []
+        yoy = [(rev[i + 1] - rev[i]) / rev[i] if rev[i] != 0 else 0.0 for i in range(len(rev) - 1)] if len(rev) >= 2 else []
         cv = coefficient_of_variation(yoy) if len(yoy) >= 2 else 0.0
 
         # Map 0-6 recovery score to 0-10 final score with quality neutral bonus (1.0)
@@ -105,7 +105,7 @@ def score_layer_1(f: TickerFinancials) -> LayerScore:
         base = 3  # implausible
 
     # Consistency on YoY growth rates (lower CV = higher)
-    yoy = [(rev[i + 1] - rev[i]) / rev[i] for i in range(len(rev) - 1)] if len(rev) >= 2 else []
+    yoy = [(rev[i + 1] - rev[i]) / rev[i] if rev[i] != 0 else 0.0 for i in range(len(rev) - 1)] if len(rev) >= 2 else []
     cv = coefficient_of_variation(yoy) if len(yoy) >= 2 else 0.0
     if cv < 0.10:
         consistency = 2.0
