@@ -54,6 +54,7 @@ class TickerFinancials:
     # current price / market data
     price_current: float = 0.0
     market_cap_current: float = 0.0
+    dividend_yield: float = 0.0
     forward_eps_growth_1y: float | None = None
     # historical valuation series — populated by yfinance provider for L7 Q18
     # list of annual P/E values (oldest -> newest), one per year, max 5 years

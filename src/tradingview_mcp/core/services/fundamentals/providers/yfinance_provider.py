@@ -128,6 +128,7 @@ class YfinanceProvider(FinancialProvider):
             industry_name=industry_str,
             price_current=float(info.get("currentPrice") or 0.0),
             market_cap_current=float(info.get("marketCap") or 0.0),
+            dividend_yield=float(info.get("dividendYield") or 0.0),
             forward_eps_growth_1y=info.get("earningsGrowth"),
             source_chain=["yfinance"],
         )
@@ -299,6 +300,7 @@ class YfinanceProvider(FinancialProvider):
             ticker=ticker,
             price_current=float(info.get("currentPrice") or 0.0),
             market_cap_current=float(info.get("marketCap") or 0.0),
+            dividend_yield=float(info.get("dividendYield") or 0.0),
             forward_eps_growth_1y=info.get("earningsGrowth"),
             source_chain=["yfinance:price_only"],
         )
