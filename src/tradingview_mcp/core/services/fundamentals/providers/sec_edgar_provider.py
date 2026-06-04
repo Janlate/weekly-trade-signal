@@ -81,12 +81,17 @@ _CONCEPT_MAP: dict[str, list[str]] = {
 }
 
 
-def _annual_series(units_dict: dict, n_years: int = 5) -> list[float]:
+def _annual_series(units_dict: dict, n_years: int = 10) -> list[float]:
     """Extract last n FY values from XBRL units list, oldest -> newest.
 
     EDGAR companyfacts returns each annual filing as a separate object.
     We filter FY 10-K rows, deduplicate by (fy, end) to avoid restatements
     causing duplicates, sort by end date, and return the last n entries.
+
+    Default n_years=10 (raised from 5) so that cyclical scorers can access
+    a full commodity/capital cycle (framwork.md: 7-10y for cyclicals).
+    Non-cyclical scorers use len(series) dynamically and are unaffected
+    (they receive more data but only score what they need).
     """
     usd = units_dict.get("USD") or units_dict.get("shares") or []
     fy_only = [

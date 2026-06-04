@@ -181,13 +181,16 @@ def _run_donchian(candles, period=20, **_):
     dc     = calc_donchian(highs, lows, period)
     trades, position = [], None
     for i in range(1, len(candles)):
-        if dc["upper"][i] is None:
+        # dc["upper"][i-1] = max(highs[i-period : i]) — the fully-closed prior channel
+        # (does NOT include bar i's high, so today's close can surpass it).
+        if dc["upper"][i - 1] is None:
             continue
         price, date = candles[i]["close"], candles[i]["date"]
-        prev_high   = highs[i - 1]
-        if position is None and dc["upper"][i - 1] is not None and prev_high > dc["upper"][i - 1]:
+        if position is None and price > dc["upper"][i - 1]:
+            # Close breaks above the prior period's highest high → breakout entry
             position = {"entry_date": date, "entry_price": price, "strategy": "donchian"}
-        elif position is not None and dc["lower"][i] is not None and price < dc["lower"][i]:
+        elif position is not None and dc["lower"][i - 1] is not None and price < dc["lower"][i - 1]:
+            # Close breaks below the prior period's lowest low → exit
             trades.append({**position, "exit_date": date, "exit_price": price})
             position = None
     return trades

@@ -87,7 +87,14 @@ def score_layer_1(f: TickerFinancials) -> LayerScore:
         )
 
     # ── STANDARD PATH (non-cyclical) ──────────────────────────────────────────
-    g = cagr(rev[0], rev[-1], actual_years - 1)
+    # Slice to the last _PREFERRED_YEARS_STANDARD entries so that a provider
+    # fetching more than 5y (e.g. SEC EDGAR now returns up to 10y for cyclical
+    # benefit) does NOT change the non-cyclical CAGR window.  Cyclicals already
+    # branched above and use the full series.
+    rev_window = rev[-_PREFERRED_YEARS_STANDARD:] if len(rev) > _PREFERRED_YEARS_STANDARD else rev
+    window_years = len(rev_window)
+
+    g = cagr(rev_window[0], rev_window[-1], window_years - 1)
     lo, hi = GROWTH_BANDS.get(tier, (0.08, 0.15))
 
     # Base score from tier match (0-6)
@@ -105,7 +112,7 @@ def score_layer_1(f: TickerFinancials) -> LayerScore:
         base = 3  # implausible
 
     # Consistency on YoY growth rates (lower CV = higher)
-    yoy = [(rev[i + 1] - rev[i]) / rev[i] if rev[i] != 0 else 0.0 for i in range(len(rev) - 1)] if len(rev) >= 2 else []
+    yoy = [(rev_window[i + 1] - rev_window[i]) / rev_window[i] if rev_window[i] != 0 else 0.0 for i in range(len(rev_window) - 1)] if len(rev_window) >= 2 else []
     cv = coefficient_of_variation(yoy) if len(yoy) >= 2 else 0.0
     if cv < 0.10:
         consistency = 2.0
@@ -125,7 +132,7 @@ def score_layer_1(f: TickerFinancials) -> LayerScore:
     verdict = "PASS" if score >= 7 else ("CAUTION" if score >= 4 else "FAIL")
 
     rationale = (
-        f"CAGR {g*100:.1f}% over {actual_years} years; tier={tier} "
+        f"CAGR {g*100:.1f}% over {window_years} years; tier={tier} "
         f"(expected {lo*100:.0f}-{hi*100:.0f}%); cv={cv:.2f}"
     )
 
